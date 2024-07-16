@@ -1,68 +1,47 @@
 import requests
 import time
-import base64
-import configparser
 
-# Load settings from INI file
-config = configparser.ConfigParser()
-config.read('zendesk_config.ini')
+# Authentication and headers
+SUBDOMAIN = 'observian'
+EMAIL = 'paul.kell@observian.com'
+TOKEN = '1fW487XBDZpE4vN3B048B7knCfpt5UXE3LMjj5ZF'
+AUTH = (EMAIL + '/token', TOKEN)
+HEADERS = {'Content-Type': 'application/json'}
 
-api_token = config.get('Zendesk', 'api_token')
-auth_email = config.get('Zendesk', 'auth_email')
-rate_limit = config.get('Zendesk', 'rate_limit')
-specified_string = config.get('Zendesk', 'specified_string').lower()
-subdomain = config.get('Zendesk', 'subdomain')
+# Rate limiting parameters
+MAX_CALLS_PER_MINUTE = 95
+SLEEP_TIME = 60 / MAX_CALLS_PER_MINUTE  # Pause between API calls to respect the rate limit
 
-# Encode credentials for Basic Authentication
-credentials = f"{auth_email}/api_token:{api_token}"
-encoded_credentials = base64.b64encode(credentials.encode()).decode()
-
-headers = {
-    "Authorization": f"Basic {encoded_credentials}"
-}
-
-def search_tickets(page=1):
-    """Search for closed tickets containing the specified string in the subject."""
-    url = f"https://{subdomain}.zendesk.com/api/v2/search.json?query=type:ticket status:closed subject:*{specified_string}* page={page}"
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        raise Exception(f"Failed to search tickets: {response.text}")
-    return response.json()
-
-def delete_ticket(ticket_id):
-    """Delete a single ticket by its ID."""
-    url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-    response = requests.delete(url, headers=headers)
-    if response.status_code != 204:
-        raise Exception(f"Failed to delete ticket {ticket_id}: {response.text}")
-
-def bulk_delete_tickets(ticket_ids):
-    """Delete tickets in bulk while observing the rate limit."""
-    for i, ticket_id in enumerate(ticket_ids, start=1):
-        delete_ticket(ticket_id)
-        if i % rate_limit == 0:
-            print(f"Rate limit reached, sleeping for 60 seconds...")
-            time.sleep(60)
-
-def main():
+def find_and_delete_tickets(search_string):
     page = 1
-    ticket_ids = []
+    tickets_deleted = 0
 
     while True:
-        results = search_tickets(page)
-        tickets = results.get("results", [])
-        if not tickets:
+        search_url = f"https://{SUBDOMAIN}.zendesk.com/api/v2/search.json?query=type:ticket status:closed subject:\"{search_string}\""
+        response = requests.get(search_url, auth=AUTH, headers=HEADERS, params={'page': page})
+
+        if response.status_code != 200:
+            print(f"Error fetching tickets: {response.status_code}")
             break
+
+        tickets = response.json()['results']
+        if not tickets:
+            break  # No more tickets to process
+
         for ticket in tickets:
-            subject = ticket["subject"].lower()
-            if specified_string in subject:
-                ticket_ids.append(ticket["id"])
+            delete_url = f"https://{SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket['id']}.json"
+            delete_response = requests.delete(delete_url, auth=AUTH, headers=HEADERS)
+            if delete_response.status_code == 204:
+                print(f"Deleted ticket ID: {ticket['id']}")
+                tickets_deleted += 1
+            else:
+                print(f"Error deleting ticket ID: {ticket['id']}: {delete_response.status_code}")
+
+            time.sleep(SLEEP_TIME)  # Respect the rate limit
 
         page += 1
-        time.sleep(60 / rate_limit)  # Respect the rate limit
 
-    print(f"Found {len(ticket_ids)} tickets to delete.")
-    bulk_delete_tickets(ticket_ids)
+    print(f"Total tickets deleted: {tickets_deleted}")
 
-if __name__ == "__main__":
-    main()
+search_string = "CVE-2022-48566"
+find_and_delete_tickets(search_string)
